@@ -622,10 +622,12 @@ function openThread(siteId, idx){
   autobar.style.display = "block";
   window.scrollTo(0,0);
   renderReader(false);
+  resumeAuto();
   loadArticleFull(s, s.threads[idx]);
 }
 function closeReader(){
-  stopAuto();
+  // 一覧に戻っても自動スクロールは止めない（ON状態を保持し、
+  // 次にスレッドを開いたとき先頭から続行する）。止めるのはボタンのみ。
   state.view = "list"; state.current = null;
   readerView.style.display = "none";
   autobar.style.display = "none";
@@ -966,31 +968,63 @@ function moveThread(dir){
   }
   var next = flat[pos+dir];
   if(!next) return;
-  stopAuto();
+  // スレッドを切り替えても自動スクロールは止めない（新しいスレッドの先頭から続行）
   state.current = {siteId: next.site.id, index: next.idx};
   window.scrollTo(0,0);
   renderReader(false);
+  resumeAuto();
   loadArticleFull(next.site, next.t);
 }
 
 /* ============================================================
    自動スクロール
    ============================================================ */
+function saveAutoState(){
+  try{
+    localStorage.setItem("mv2ch.auto", state.auto ? "1" : "0");
+    localStorage.setItem("mv2ch.speed", $("speedRange").value);
+  }catch(e){}
+}
+function syncAutoBtn(){
+  $("btnAuto").textContent = state.auto ? "⏸" : "▶";
+  $("btnAuto").setAttribute("aria-pressed", state.auto ? "true" : "false");
+}
+function autoTick(){
+  if(!state.auto) return;
+  // 一覧表示中はスクロールを進めない（ON状態だけ保持し、記事を開くと続行する）
+  if(state.view !== "reader" || !state.current) return;
+  var docEl = document.documentElement;
+  var maxY = Math.max(document.body ? document.body.scrollHeight : 0, docEl ? docEl.scrollHeight : 0) - window.innerHeight;
+  if(maxY <= 0) return;
+  // 本文の最後まで来たら、ONのまま止まって待つ（自動ではOFFにしない）
+  if(window.scrollY >= maxY - 2) return;
+  var speed = parseInt($("speedRange").value,10);
+  if(!(speed >= 1)) speed = 3;
+  window.scrollBy(0, speed * 0.6);
+}
+function ensureAutoTimer(){
+  if(state.auto && !state.autoTimer){
+    state.autoTimer = setInterval(autoTick, 16);
+  }
+}
 function startAuto(){
   state.auto = true;
-  $("btnAuto").textContent = "⏸";
-  state.autoTimer = setInterval(function(){
-    var speed = parseInt($("speedRange").value,10);
-    window.scrollBy(0, speed * 0.6);
-    if(window.innerHeight + window.scrollY >= document.body.scrollHeight - 2){
-      stopAuto(); toast("最後までスクロールしました");
-    }
-  }, 16);
+  syncAutoBtn();
+  ensureAutoTimer();
+  saveAutoState();
 }
 function stopAuto(){
+  // 呼ぶのはボタン（⏸）を押したときだけ。スレッド切替・画面遷移・
+  // 本文の再取得・最後尾到達からは呼ばない。
   state.auto = false;
-  $("btnAuto").textContent = "▶";
+  syncAutoBtn();
   if(state.autoTimer){ clearInterval(state.autoTimer); state.autoTimer = null; }
+  saveAutoState();
+}
+function resumeAuto(){
+  // スレッドを開いた／切り替えたあと、ONなら先頭からスクロールを続ける
+  syncAutoBtn();
+  ensureAutoTimer();
 }
 
 /* ============================================================
@@ -1103,6 +1137,17 @@ $("fontRange").addEventListener("input", function(){
   applyFontSize(v);
   try{ localStorage.setItem("mv2ch.fontSize", String(v)); }catch(e){}
 });
+
+/* 自動スクロールのON/OFFと速さを復元する（文字サイズと同じく保存し、
+   次回開いたときも状態を引き継ぐ。ONでも一覧では進まず、記事を開くと続行） */
+try{
+  var sv = parseInt(localStorage.getItem("mv2ch.speed"), 10);
+  if(sv >= 1 && sv <= 10) $("speedRange").value = String(sv);
+  if(localStorage.getItem("mv2ch.auto") === "1") state.auto = true;
+}catch(e){}
+syncAutoBtn();
+ensureAutoTimer();
+$("speedRange").addEventListener("input", saveAutoState);
 
 renderList();
 })();
