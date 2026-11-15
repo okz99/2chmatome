@@ -96,7 +96,16 @@ a{color:var(--link)}
 .reader-top a.btn{text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
 .reader-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:var(--shadow);padding:18px 16px 22px}
-.reader-card h1{font-size:20px;line-height:1.5;margin:0 0 8px}
+/* ---- sticky thread title (stays at the very top while the body scrolls) ---- */
+.reader-titlebar{position:sticky;top:0;z-index:35;display:flex;gap:8px;align-items:flex-start;
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow);padding:7px 9px;margin:0 0 10px;max-width:100%}
+.reader-titlebar h1{font-size:16px;line-height:1.45;margin:1px 0 0;flex:1 1 auto;min-width:0;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  overflow-wrap:anywhere;word-break:break-word}
+.reader-titlebar .btn-back-mini{flex:0 0 auto;width:32px;height:32px;min-height:32px;padding:0;
+  background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:7px;
+  font-size:16px;line-height:1;display:inline-flex;align-items:center;justify-content:center}
 .reader-meta{font-size:12.5px;color:var(--ink2);border-bottom:1px solid var(--line);
   padding-bottom:10px;margin-bottom:14px;display:flex;flex-wrap:wrap;gap:6px 14px}
 .reader-meta .src{color:var(--accent);font-weight:700}
@@ -104,7 +113,6 @@ a{color:var(--link)}
 .reader-body a{overflow-wrap:anywhere;word-break:break-all}
 .reader-body p{overflow-wrap:anywhere}
 .reader-card{max-width:100%;overflow-x:clip}
-.reader-card h1{overflow-wrap:anywhere;word-break:break-word}
 img,video,iframe,table,pre{max-width:100%}
 .reader-body p{margin:0 0 1em}
 .reader-body .res-num{font-weight:700;color:var(--ink)}
@@ -132,7 +140,7 @@ img,video,iframe,table,pre{max-width:100%}
   border-radius:999px;padding:8px 18px;font-size:14px;z-index:60;display:none;box-shadow:var(--shadow)}
 footer{font-size:12px;color:var(--ink2);margin-top:26px;line-height:1.7}
 @media (max-width:520px){
-  .reader-card h1{font-size:18px}
+  .reader-titlebar h1{font-size:15px}
   .reader-body{font-size:15.5px}
 }
 </style>
@@ -178,8 +186,11 @@ footer{font-size:12px;color:var(--ink2);margin-top:26px;line-height:1.7}
       <button class="btn" id="btnReloadArticle" type="button">本文を再取得</button>
       <a class="btn btn-source" id="btnOpenSource" href="#" target="_blank" rel="noopener noreferrer">もとのサイトを開く ↗</a>
     </div>
-    <article class="reader-card">
+    <div class="reader-titlebar">
+      <button class="btn-back-mini" id="btnBackSticky" type="button" aria-label="一覧に戻る" title="一覧に戻る">←</button>
       <h1 id="readerTitle"></h1>
+    </div>
+    <article class="reader-card">
       <div class="reader-meta" id="readerMeta"></div>
       <div class="reader-notice" id="readerNotice" hidden></div>
       <div class="reader-body" id="readerBody"></div>
@@ -1106,6 +1117,7 @@ $("addForm").addEventListener("submit", function(e){
   });
 });
 $("btnBack").addEventListener("click", closeReader);
+$("btnBackSticky").addEventListener("click", closeReader);
 $("btnPrev").addEventListener("click", function(){ moveThread(-1); });
 $("btnNext").addEventListener("click", function(){ moveThread(1); });
 $("btnReloadArticle").addEventListener("click", function(){
