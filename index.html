@@ -119,10 +119,20 @@ a{color:var(--link)}
   box-shadow:var(--shadow);padding:14px 16px;margin:10px 0}
 .panel h3{margin:0 0 8px;font-size:16px}
 .panel p{font-size:13px;color:var(--ink2);margin:0 0 10px}
-.site-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--line);flex-wrap:wrap}
-.site-row .nm{font-weight:600;font-size:14px;flex:1 1 140px}
+.site-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line);flex-wrap:wrap}
+.site-row .nm{font-weight:600;font-size:14px;flex:1 1 140px;min-width:0}
 .site-row .url{font-size:11px;color:var(--ink2);display:block;font-weight:400;word-break:break-all}
+.site-row .actions{display:flex;align-items:center;gap:10px;margin-left:auto;flex:0 0 auto;flex-wrap:wrap;justify-content:flex-end}
 .site-row .mini{font-size:13px;padding:4px 10px;min-height:36px}
+.site-state{font-size:13px;font-weight:700;min-width:2.5em;text-align:center}
+.site-state.on{color:var(--ok)}
+.site-state.off{color:var(--ink2)}
+.site-switch{position:relative;display:inline-block;flex:0 0 auto;width:84px;height:44px;min-height:44px;padding:0;border:none;border-radius:999px;background:#d6d6d6;box-shadow:inset 0 1px 2px rgba(0,0,0,.10);transition:background-color .18s ease, box-shadow .18s ease}
+.site-switch::after{content:"";position:absolute;top:4px;left:4px;width:36px;height:36px;border-radius:50%;background:#f7f7f7;box-shadow:0 2px 6px rgba(0,0,0,.20);transition:left .18s ease, transform .18s ease}
+.site-switch.on{background:#5bd463}
+.site-switch.on::after{left:44px}
+.site-switch.off{background:#d6d6d6}
+.site-switch:focus-visible{outline:3px solid rgba(11,78,162,.35);outline-offset:2px}
 .add-form{display:grid;gap:8px;margin-top:6px}
 .add-form label{font-size:13px;font-weight:700}
 .add-form input{border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);
@@ -709,8 +719,11 @@ function renderManage(){
   sites.forEach(function(s){
     html += '<div class="site-row"><span class="nm">'+esc(s.name)
       + '<span class="url">'+esc(s.rss)+' ／ '+s.threads.length+'件</span></span>'
-      + '<button type="button" class="btn mini" data-act="toggle" data-id="'+s.id+'">'+(s.enabled?"無効にする":"有効にする")+'</button>'
-      + (s.custom ? '<button type="button" class="btn mini" data-act="del" data-id="'+s.id+'">削除</button>' : '')
+      + '<span class="actions">'
+      +   '<span class="site-state '+(s.enabled?'on':'off')+'">'+(s.enabled?'有効':'無効')+'</span>'
+      +   '<button type="button" class="site-switch '+(s.enabled?'on':'off')+'" data-act="toggle" data-id="'+s.id+'" role="switch" aria-checked="'+(s.enabled?'true':'false')+'" aria-label="'+esc(s.name)+' を '+(s.enabled?'無効':'有効')+' にする"></button>'
+      +   (s.custom ? '<button type="button" class="btn mini" data-act="del" data-id="'+s.id+'">削除</button>' : '')
+      + '</span>'
       + '</div>';
   });
   $("siteRows").innerHTML = html;
@@ -913,7 +926,15 @@ async function refreshAll(){
 function flatList(){
   var arr = [];
   var showSites = state.filter==="all" ? enabledSites() : (findSite(state.filter) ? [findSite(state.filter)] : enabledSites());
-  showSites.forEach(function(s){ s.threads.forEach(function(t, idx){ arr.push({site:s, idx:idx, t:t}); }); });
+  showSites.forEach(function(s){
+    s.threads.forEach(function(t, idx){
+      // 表示中の記事は既読になっていても移動位置の基準として残す。
+      var isCurrent = state.current && state.current.siteId === s.id && state.current.index === idx;
+      // 未読のみがONなら、それ以外の既読記事は前後の移動対象から外す。
+      if(state.unreadOnly && !isCurrent && isRead(t)) return;
+      arr.push({site:s, idx:idx, t:t});
+    });
+  });
   // 一覧と同じく日時の新しい順（前／次のスレッド移動も一覧の並びに合わせる）
   arr.sort(function(x, y){ return threadTime(y.t) - threadTime(x.t); });
   return arr;
@@ -1438,6 +1459,7 @@ function moveThread(dir){
   for(var i=0;i<flat.length;i++){
     if(flat[i].site.id===state.current.siteId && flat[i].idx===state.current.index){ pos=i; break; }
   }
+  if(pos < 0) return;
   var next = flat[pos+dir];
   if(!next) return;
   // スレッドを切り替えたら自動スクロールは1回止める（新仕様）。
