@@ -616,7 +616,7 @@ function toast(msg){
   clearTimeout(t._h); t._h=setTimeout(function(){ t.style.display="none"; },2200);
 }
 function enabledSites(){ return sites.filter(function(s){ return s.enabled; }); }
-function totalThreads(){ return enabledSites().reduce(function(a,s){ return a+s.threads.length; },0); }
+function totalThreads(){ return enabledSites().reduce(function(a,s){ return a+s.threads.filter(threadRecent).length; },0); }
 function findSite(id){ for(var i=0;i<sites.length;i++) if(sites[i].id===id) return sites[i]; return null; }
 
 /* ============================================================
@@ -625,7 +625,7 @@ function findSite(id){ for(var i=0;i<sites.length;i++) if(sites[i].id===id) retu
 function renderChips(){
   var html = '<button type="button" class="chip'+(state.filter==="all"?" on":"")+'" data-filter="all">すべて<span class="cnt">'+totalThreads()+'</span></button>';
   sites.forEach(function(s){
-    html += '<button type="button" class="chip'+(state.filter===s.id?" on":"")+(s.enabled?"":" off")+'" data-filter="'+s.id+'">'+esc(s.name)+'<span class="cnt">'+s.threads.length+'</span></button>';
+    html += '<button type="button" class="chip'+(state.filter===s.id?" on":"")+(s.enabled?"":" off")+'" data-filter="'+s.id+'">'+esc(s.name)+'<span class="cnt">'+s.threads.filter(threadRecent).length+'</span></button>';
   });
   $("chips").innerHTML = html;
   var chips = $("chips").querySelectorAll(".chip");
@@ -640,11 +640,13 @@ function threadMatches(t){
   if(!state.query) return true;
   return t.t.toLowerCase().indexOf(state.query.toLowerCase()) >= 0;
 }
-/* 一覧表示用フィルター：検索条件に加え、「未読のみ」がONのときは
-   既読スレッド（既存の既読管理 mv2ch.read で判定）を一覧から外す。
-   記事画面の前／次移動（flatList）には効かせない（移動対象は
-   従来通り全スレッドのまま）。 */
+/* 投稿日時から7日（168時間）以上経過した記事と日時不明の記事は表示しない。 */
+function threadRecent(t){
+  return threadTime(t) > Date.now() - 7*24*60*60*1000;
+}
+/* 一覧表示用フィルター：掲載期間・検索・未読条件を適用する。 */
 function threadShown(t){
+  if(!threadRecent(t)) return false;
   if(!threadMatches(t)) return false;
   if(state.unreadOnly && isRead(t)) return false;
   return true;
@@ -667,8 +669,8 @@ function renderList(){
     entries.sort(function(x, y){ return threadTime(y.t) - threadTime(x.t); });
     if(!entries.length){
       html += state.unreadOnly
-        ? '<div class="empty">未読のスレッドはありません。</div>'
-        : '<div class="empty">表示できるスレッドがありません。「最新を取得」で読み込み直してください。</div>';
+        ? '<div class="empty">過去7日間の未読スレッドはありません。「最新を取得」で更新してください。</div>'
+        : '<div class="empty">過去7日間に表示できるスレッドがありません。「最新を取得」で読み込み直してください。</div>';
     }
     entries.forEach(function(e){
       var idx = e.s.threads.indexOf(e.t);
@@ -687,8 +689,8 @@ function renderList(){
       html += '<div class="site-head"><h2>'+esc(s.name)+'</h2><span>'+list.length+'件'+(s.threads.length>=20?"（上限20件）":"")+'</span></div>';
       if(!list.length){
         html += state.unreadOnly
-          ? '<div class="empty">未読のスレッドはありません。</div>'
-          : '<div class="empty">表示できるスレッドがありません。「最新を取得」で読み込み直してください。</div>';
+          ? '<div class="empty">過去7日間の未読スレッドはありません。「最新を取得」で更新してください。</div>'
+          : '<div class="empty">過去7日間に表示できるスレッドがありません。「最新を取得」で読み込み直してください。</div>';
       }
       list.forEach(function(t){
         var idx = s.threads.indexOf(t);
@@ -711,7 +713,7 @@ function renderList(){
   }
   $("statusLine").innerHTML = "登録 <b>"+sites.length+"サイト</b>（有効 "+enabledSites().length+"）／ 表示中 <b>"+shown+"件</b>"
     + (state.query ? "（検索："+esc(state.query)+"）" : "（各サイト最大20件）")
-    + (state.unreadOnly ? "（未読のみ）" : "");
+    + (state.unreadOnly ? "（未読のみ）" : "") + "／ 過去7日間の記事のみ";
   renderManage();
 }
 function renderManage(){
@@ -931,6 +933,7 @@ function flatList(){
       // 表示中の記事は既読になっていても移動位置の基準として残す。
       var isCurrent = state.current && state.current.siteId === s.id && state.current.index === idx;
       // 未読のみがONなら、それ以外の既読記事は前後の移動対象から外す。
+      if(!isCurrent && !threadRecent(t)) return;
       if(state.unreadOnly && !isCurrent && isRead(t)) return;
       arr.push({site:s, idx:idx, t:t});
     });
@@ -940,7 +943,7 @@ function flatList(){
   return arr;
 }
 function openThread(siteId, idx){
-  var s = findSite(siteId); if(!s || !s.threads[idx]) return;
+  var s = findSite(siteId); if(!s || !s.threads[idx] || !threadRecent(s.threads[idx])) return;
   markRead(s.threads[idx]);
   state.current = {siteId:siteId, index:idx};
   state.view = "reader";
@@ -1461,7 +1464,7 @@ function moveThread(dir){
   }
   if(pos < 0) return;
   var next = flat[pos+dir];
-  if(!next) return;
+  if(!next || !threadRecent(next.t)) return;
   // スレッドを切り替えたら自動スクロールは1回止める（新仕様）。
   // 前／次ボタン・スワイプ・矢印キーはすべてここを通る。
   // 新しいスレッドでは、ボタンを押し直したときだけスクロールが始まる。
