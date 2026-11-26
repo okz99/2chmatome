@@ -353,40 +353,61 @@ function proxyUrls(url){
     "https://api.allorigins.win/get?url=" + encodeURIComponent(url)
   ];
 }
-async function fetchWithTimeout(u, ms){
-  // タイムアウト無しだと応答しない経路でいつまでも止まり、
-  // 「押しても何も起きない」ように見える。必ず打ち切って次の経路へ進む。
-  if(typeof AbortController === "function"){
-    var ctl = new AbortController();
-    var timer = setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, ms);
-    try{
-      return await fetch(u, {credentials:"omit", signal: ctl.signal});
-    } finally { clearTimeout(timer); }
+// 応答ヘッダーだけでなく本文の受信完了まで時間制限を適用する。
+async function fetchWithTimeout(u, ms, externalSignal){
+  var ctl = new AbortController();
+  var abort = function(){ ctl.abort(); };
+  if(externalSignal){ if(externalSignal.aborted) abort(); else externalSignal.addEventListener("abort", abort, {once:true}); }
+  var timer;
+  try{
+    return await Promise.race([
+      (async function(){
+        var res = await fetch(u, {credentials:"omit", signal:ctl.signal});
+        if(!res.ok) throw new Error("HTTP " + res.status);
+        var buf = await res.arrayBuffer();
+        return {ok:true, status:res.status, headers:res.headers, arrayBuffer:function(){return Promise.resolve(buf);}, text:function(){return Promise.resolve(new TextDecoder().decode(buf));}};
+      })(),
+      new Promise(function(_, reject){ timer=setTimeout(function(){ abort(); reject(new Error("timeout")); },ms); })
+    ]);
+  } finally { clearTimeout(timer); if(externalSignal) externalSignal.removeEventListener("abort",abort); }
+}
+async function fetchRoute(u, ms, signal){
+  var res = await fetchWithTimeout(u, ms, signal);
+  var buf = await res.arrayBuffer();
+  if(!buf || !buf.byteLength) throw new Error("empty");
+  var text = decodeBufferSmart(buf, res.headers.get("content-type"));
+  if(u.indexOf("allorigins.win/get?") >= 0){
+    var wrapped=JSON.parse(text);
+    if(!wrapped || typeof wrapped.contents!=="string" || !wrapped.contents) throw new Error("bad wrapped response");
+    return wrapped.contents;
   }
-  return fetch(u, {credentials:"omit"});
+  return text;
 }
 async function fetchTextSmart(url){
-  var urls = proxyUrls(url), lastErr = null;
+  var urls=proxyUrls(url), lastErr;
   for(var i=0;i<urls.length;i++){
-    try{
-      var res = await fetchWithTimeout(urls[i], 12000);
-      if(!res.ok) throw new Error("HTTP " + res.status);
-      var buf = await res.arrayBuffer();           // ← 生バイト列で取得
-      if(!buf || buf.byteLength===0) throw new Error("empty");
-      var text = decodeBufferSmart(buf, res.headers.get("content-type")); // ← 判別してデコード
-      // allorigins の /get 経路は {"contents":"..."} の JSON で包んで
-      // 返すため、中身だけを取り出す（包みが無い／壊れている場合は失敗扱い）
-      if(urls[i].indexOf("allorigins.win/get?") >= 0){
-        try{
-          var wrapped = JSON.parse(text);
-          if(wrapped && typeof wrapped.contents === "string" && wrapped.contents) return wrapped.contents;
-        }catch(e){}
-        throw new Error("bad wrapped response");
-      }
-      return text;
-    }catch(e){ lastErr = e; }
+    try{return await fetchRoute(urls[i],8000);}catch(e){lastErr=e;}
   }
   throw lastErr || new Error("fetch failed");
+}
+// RSS専用：直接通信を短時間試し、失敗時は代替経路を並列で試す。
+async function fetchFeedFast(url){
+  var urls=proxyUrls(url);
+  function validate(text){
+    var threads=parseRss(text);
+    if(!threads.length) throw new Error("no items");
+    return threads;
+  }
+  try{return validate(await fetchRoute(urls[0],3000));}catch(e){}
+  var ctl=new AbortController();
+  try{
+    return await new Promise(function(resolve,reject){
+      var left=urls.length-1;
+      urls.slice(1).forEach(function(u){
+        fetchRoute(u,9000,ctl.signal).then(validate).then(resolve,function(e){if(--left===0) reject(e);});
+      });
+    });
+  } finally {ctl.abort();}
 }
 
 /* ============================================================
@@ -402,6 +423,7 @@ var PRESETS = [
   {name:"やらおん！", home:"https://yaraon-blog.com/", rss:"https://yaraon-blog.com/index.rdf"}
 ];
 
+var SITE_BODY_PROFILES = {"アルファルファモザイク": "numbered", "ハムスター速報": "numbered", "はちま起稿": "reaction", "暇人＼(＾o＾)／速報": "numbered", "痛いニュース(ﾉ∀`)": "numbered", "VIPPERな俺": "numbered", "カナ速": "numbered", "哲学ニュースnwk": "numbered", "ニュー速VIPブログ": "mixed", "妹はVIPPER": "numbered", "【2ch】ニュー速クオリティ": "numbered", "VIPPER速報": "numbered", "キニ速": "numbered", "おーるじゃんる": "numbered", "常識的に考えた": "numbered", "ぶる速-VIP": "numbered", "Ｚチャンネル＠ＶＩＰ": "numbered", "ろぼ速VIP": "numbered", "ぁゃιぃ(*ﾟーﾟ)NEWS 2nd": "numbered", "watch@2チャンネル": "mixed", "ふぇー速": "numbered", "ネギ速": "numbered", "今日速2ch": "numbered", "まとめたニュース": "numbered", "ニュース30over": "numbered", "ゴールデンタイムズ": "numbered", "いたしん！": "numbered", "カオスちゃんねる": "numbered", "ラビット速報": "numbered", "マジキチ速報": "numbered", "キムチ速報": "numbered", "あじあにゅーす２ちゃんねる": "numbered", "海外反応！ I LOVE JAPAN": "reaction", "カイカイ反応通信": "reaction", "デジタルニューススレッド": "numbered", "ゲハ速": "numbered", "アニコ便": "anime", "萌えオタニュース速報": "mixed", "ジャンプ速報": "numbered", "虹神速報～にじそく～": "mixed", "【2ch】コピペ情報局": "numbered", "芸能人の気になる噂": "numbered", "AKB48タイムズ": "numbered", "素敵な鬼女様": "numbered", "結婚・恋愛ニュースぷらす": "numbered"};
 var sites = snapshot.map(function(s, idx){
   var threads = (s.threads||[]).map(function(t){
     // 本文まで収録済みのスレッドは、各記事ページから全文（全レス）を
@@ -411,7 +433,7 @@ var sites = snapshot.map(function(s, idx){
     // 明示的に行った場合のみ。
     // 本文が空のスレッド（追加登録サイト分）は保護せず、開いたときに
     // loadArticleFull が記事ページから本文を読み込む。
-    t._full = !!(t.b && String(t.b).trim());
+    t._full = false; // 収録本文だけでは全文確認済みとしない。
     return t;
   });
   return { id:"s"+idx, name:s.name, home:s.home, rss:s.rss, enabled:true, custom:false, threads:threads };
@@ -514,7 +536,7 @@ function applySavedSiteState(){
     var threads = (Array.isArray(cs.threads) ? cs.threads : []).map(function(t){
       t = t || {};
       var body = t.b || "";
-      return { t:t.t || "", u:t.u || "", d:t.d || "", c:t.c || "", b:body, i:Array.isArray(t.i) ? t.i : [], _full: !!String(body).trim() };
+      return { t:t.t || "", u:t.u || "", d:t.d || "", c:t.c || "", b:body, i:Array.isArray(t.i) ? t.i : [], _full: false };
     });
     sites.push({ id:"s"+(siteSeq++), name:cs.name || cs.rss, home:cs.home || "", rss:cs.rss || "", enabled:cs.enabled !== false, custom:true, threads:threads });
   });
@@ -777,7 +799,7 @@ function parseRss(text){
     var all = it.getElementsByTagName("*");
     for(var k=0;k<all.length;k++){
       var ln = all[k].localName;
-      if((ln==="date" || ln==="published" || ln==="updated") && !date) date = all[k].textContent.trim();
+      if((ln==="date" || ln==="pubDate" || ln==="published" || ln==="updated") && !date) date = all[k].textContent.trim();
       if(ln==="subject" && !subj) subj = all[k].textContent.trim();
       if((ln==="encoded" || ln==="content") && !encoded) encoded = all[k].textContent;
       if((ln==="description" || ln==="summary") && !desc) desc = all[k].textContent;
@@ -809,7 +831,7 @@ function extractBlockText(root){
   walk(root);
   return out.join("");
 }
-function htmlToSegments(raw){
+function htmlToSegments(raw, keepComments){
   var imgs = [];
   if(!raw) return {text:"", imgs:imgs};
   var doc = new DOMParser().parseFromString(raw, "text/html");
@@ -817,10 +839,13 @@ function htmlToSegments(raw){
   // スクリプト・広告・関連記事リスト等はテキスト化しない
   // （document.write 等の混入と、関連記事タイトルの混入を防ぐ）
   var drops = doc.querySelectorAll("script, style, noscript, template, iframe, form, svg, .manual-related, .related-articles, #related-title, .ad_rs_c, #ad_rs, .c_box, .in_ads, .in_ads_sec, .article-option, .posted, .amazon, .poweredAdsBy, .next-article-after-body, .main_article_footer, .comment-form-v2, #comment, #comments, .comment-list, .comments-area, .comment-body");
-  for(var d=0;d<drops.length;d++) drops[d].remove();
+  for(var d=0;d<drops.length;d++){
+    if(keepComments && drops[d].matches("#comment, #comments, .comment-list, .comments-area, .comment-body")) continue;
+    drops[d].remove();
+  }
   var imgsEls = doc.querySelectorAll("img");
   for(var i=0;i<imgsEls.length;i++){
-    var src = imgsEls[i].getAttribute("src") || imgsEls[i].getAttribute("data-src") || imgsEls[i].getAttribute("data-original") || "";
+    var src = imgsEls[i].getAttribute("data-original") || imgsEls[i].getAttribute("data-src") || imgsEls[i].getAttribute("src") || "";
     var holder = doc.createElement("span");
     if(src && src.indexOf("data:")!==0 && !/\.html?($|[?#])/i.test(src) && !/st-hatena\.com|member\.livedoor\.com|entry-button|icon_img/.test(src)){
       holder.textContent = "\n[[IMG:"+imgs.length+"]]\n"; imgs.push(src);
@@ -860,8 +885,7 @@ function htmlToSegments(raw){
   return {text: lines.join("\n"), imgs: imgs};
 }
 async function refreshSite(s){
-  var text = await fetchTextSmart(s.rss);
-  var threads = parseRss(text);
+  var threads = await fetchFeedFast(s.rss);
   if(!threads.length) throw new Error("no items");
   // RSSの本文は抜粋（先頭部分だけ）のことがある。既存スレッドの方が
   // 長い本文を持っている場合はそちらを保持し、抜粋で上書きしない。
@@ -872,11 +896,20 @@ async function refreshSite(s){
       if(ot.u===nt.u){
         // 全文取得済み（_full）の本文は、長さに関係なくRSS抜粋で上書きしない
         // （Pickup実記事のように、羅列ページの抜粋より全文の方が短い場合があるため）
-        if(ot._full || countResInText(ot.b||"") > countResInText(nt.b||"") || (ot.b||"").length > (nt.b||"").length){ nt.b = ot.b; nt.i = ot.i; if(ot._full) nt._full = true; }
+        if(ot._full || bodyQuality({text:ot.b,imgs:ot.i},SITE_BODY_PROFILES[s.name]||"mixed") > bodyQuality({text:nt.b,imgs:nt.i},SITE_BODY_PROFILES[s.name]||"mixed")){ nt.b = ot.b; nt.i = ot.i; if(ot._full) nt._full = true; }
         break;
       }
     }
   });
+  // 閲覧中の記事を更新によって別の記事に置き換えない。
+  if(state.current && state.current.siteId===s.id){
+    var current=s.threads[state.current.index];
+    if(current){
+      var pos=threads.findIndex(function(t){return t.u===current.u;});
+      if(pos<0){pos=threads.length;threads.push(current);}else{threads[pos]=current;}
+      state.current.index=pos;
+    }
+  }
   s.threads = threads;
   return threads.length;
 }
@@ -892,7 +925,7 @@ async function refreshAll(){
   }
   showProgress();
   // 45サイトを1件ずつ直列に待つと非常に遅く「何も起きていない」ように
-  // 見えるため、4サイトずつ並行して取得し、進み具合をその都度表示する。
+  // 見えるため、6サイトずつ並行して取得し、進み具合をその都度表示する。
   var idx = 0;
   async function worker(){
     while(idx < targets.length){
@@ -905,11 +938,12 @@ async function refreshAll(){
         s.threads.forEach(function(t){ if(t.u && !before[t.u]) newCount++; });
       }catch(e){ fail.push(s.name); }
       done++;
+      if(state.view==="list") renderList();
       showProgress();
     }
   }
   var workers = [];
-  for(var w=0; w<4; w++) workers.push(worker());
+  for(var w=0; w<6; w++) workers.push(worker());
   await Promise.all(workers);
   btn.disabled = false; btn.textContent = "↻ 最新を取得";
   saveSiteState();
@@ -1277,13 +1311,13 @@ function pickArticleRoots(doc){
   // これは「続き」ではないので絶対に拾わない。一方、痛いニュース等の
   // livedoor系では「続き」のレス本体が div.mainmore に入っているため、
   // manual-related を含まない div.mainmore だけは本文として拾う。
-  var tokens = ["article_body","article-body","article_bodymore","article-body-more","article_body_more","entry-content","entry-body","post-body","ently_body","ently_text","ently-body","main-body","post-content","entry_text","mainEntryBody","mainEntryMore","entryBody","entryMore"];
+  var tokens = ["article_body","article-body","article_bodymore","article-body-more","article_body_more","entry-content","entry-body","post-body","ently_body","ently_text","ently-body","main-body","post-content","entry_text","mainEntryBody","mainEntryMore","entryBody","entryMore","entry_body","entry_more","post_body","article-content","article_content","article-more","article_more","entry-more","entry-content-more","more-body","more_body","res-body","res_body"];
   var roots = [];
   tokens.forEach(function(tok){
     var els = doc.getElementsByClassName(tok);
     for(var i=0;i<els.length;i++) roots.push(els[i]);
   });
-  var mms = doc.querySelectorAll("div.mainmore");
+  var mms = doc.querySelectorAll("div.mainmore, #more, #article_bodymore, #article-body-more, #entry-more, #more-body, div[id^=more-]");
   for(var k=0;k<mms.length;k++){
     if(mms[k].classList.contains("manual-related")) continue;
     if(mms[k].querySelector(".manual-related")) continue;
@@ -1312,7 +1346,7 @@ function pickArticleRoots(doc){
   if(bestFb && bestFbLen >= 50) return [bestFb];
   return doc.body ? [doc.body] : [];
 }
-function jinaToSegments(md){
+function jinaToSegments(md, title){
   // テキスト抽出プロキシ（r.jina.ai）が返す Markdown から、スレッド本文の
   // 範囲だけを切り出して、通常の本文セグメント形式に変換する。
   // 開始は「日付を含む最初のレス見出し行」、終了は「引用元」行まで。
@@ -1329,6 +1363,11 @@ function jinaToSegments(md){
   if(si < 0){
     for(var j0=0;j0<rawLines.length;j0++){ if(isResStart(rawLines[j0].trim())){ si = j0; break; } }
   }
+  if(si < 0 && title){
+    var clean=function(q){return q.replace(/^#+\s*/, "").replace(/\s+/g, "").trim();};
+    si=rawLines.findIndex(function(q){return clean(q)===clean(title);});
+    if(si>=0) si++;
+  }
   if(si < 0) return {text:"", imgs:imgs};
   var lines = [];
   function pushLine(q){
@@ -1337,6 +1376,7 @@ function jinaToSegments(md){
   }
   for(var j=si;j<rawLines.length;j++){
     var s = rawLines[j].trim();
+    if(/^(?:#{1,6}\s*)?(?:関連記事|人気記事ランキング|コメントを書く|月別アーカイブ|おすすめ記事一覧)\s*$/.test(s)) break;
     if(/^引用元[:：]/.test(s)){
       pushLine(s.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1"));
       break;
@@ -1362,100 +1402,93 @@ async function loadArticleViaJina(t){
   var res = await fetchWithTimeout("https://r.jina.ai/" + t.u, 20000);
   if(!res.ok) throw new Error("HTTP " + res.status);
   var md = await res.text();
-  return jinaToSegments(md);
+  return jinaToSegments(md,t.t);
 }
-async function loadArticleFull(s, t){
-  if(!t.u || t._full) return;
-  var notice = $("readerNotice");
-  try{
-    var html = await fetchTextSmart(t.u);   // ← 記事本文もバイト列＋文字コード判別で取得
-    var doc = new DOMParser().parseFromString(html, "text/html");
-    // Pickup系の羅列ページ（「話題になったネタを羅列して紹介している記事」）は
-    // それ自体が1本のスレッドではなくリンク集で、本文が入っていない。
-    // タイトルが一致する実記事へのリンクを1段だけ辿って全文を取得する。
-    if(doc.body && doc.body.textContent.indexOf("羅列して紹介") >= 0){
-      var wantTitle = t.t.replace(/【Pickup\d+】/g, "").replace(/\s+/g, "");
-      var links = doc.querySelectorAll("a[href]");
-      var target = null;
-      for(var li=0; li<links.length; li++){
-        var lt = (links[li].textContent||"").replace(/\s+/g, "");
-        var lh = links[li].getAttribute("href") || "";
-        if(lt === wantTitle && /articles\/\d+\.html/.test(lh) && lh.indexOf(t.u) < 0){ try{ target = new URL(lh, t.u).href; }catch(e){ target = links[li].href; } break; }
-      }
-      if(target){
-        var html2 = await fetchTextSmart(target);
-        doc = new DOMParser().parseFromString(html2, "text/html");
-      }
-    }
-    var roots = pickArticleRoots(doc);
-    var inner = "";
-    roots.forEach(function(r){
-      var clone = r.cloneNode(true);
-      var junk = clone.querySelectorAll(".manual-related, .related-articles, .ad_rs_c, .c_box, .article-option, .posted, .amazon, .poweredAdsBy, #related-title, #ad_rs, #comment, #comments, .comment-list, .comments-area");
-      for(var j=junk.length-1;j>=0;j--) junk[j].remove();
-      inner += "\n" + clone.innerHTML;
-    });
-    var seg = htmlToSegments(inner);
-    // 既知セレクタで本文らしい分量が取れなかった場合（自分で追加した
-    // サイト等の未知テンプレート）は、ページ内で最も本文らしい
-    // 大きなブロックから取り直す。ナビ・サイドバー・関連記事・広告等の
-    // 塊は候補から外し、残りは htmlToSegments 側でも除去する。
-    var segContentLen = seg.text ? seg.text.replace(/\[\[IMG:\d+\]\]/g,"").replace(/\s/g,"").length : 0;
-    if(segContentLen < 200){
-      var fb = pickLargestBlock(doc);
-      if(fb){
-        var fbClone = fb.cloneNode(true);
-        var fbJunk = fbClone.querySelectorAll(".manual-related, .related-articles, .ad_rs_c, .c_box, .article-option, .posted, .amazon, .poweredAdsBy, #related-title, #ad_rs, #comment, #comments, .comment-list, .comments-area, nav, header, footer, aside, form");
-        for(var fj=fbJunk.length-1;fj>=0;fj--) fbJunk[fj].remove();
-        var fbSeg = htmlToSegments(fbClone.innerHTML);
-        var fbLen = fbSeg.text ? fbSeg.text.replace(/\[\[IMG:\d+\]\]/g,"").replace(/\s/g,"").length : 0;
-        if(fbLen > segContentLen) seg = fbSeg;
-      }
-    }
-    // HTML経路で全文らしい分量が取れなかった場合の最終手段：
-    // テキスト抽出プロキシ（r.jina.ai）から本文範囲だけを切り出す。
-    // 通常プロキシが相手サイトに届かず 522 等になるサイト（例：
-    // ayacnews2nd.com）でも、この経路なら本文が取れることがある。
-    var segResNow = countResInText(seg.text||"");
-    if(segContentLen < 1000 || segResNow <= countResInText(t.b||"")){
-      try{
-        var jseg = await loadArticleViaJina(t);
-        var jLen = jseg.text ? jseg.text.replace(/\[\[IMG:\d+\]\]/g,"").replace(/\s/g,"").length : 0;
-        var jRes = countResInText(jseg.text||"");
-        if(jseg.text && (jRes > segResNow || jLen > segContentLen)) seg = jseg;
-      }catch(e){ /* 最終手段が失敗しても、ここまでの抽出結果で続行する */ }
-    }
-    // 相対URLを絶対化
-    seg.imgs = seg.imgs.map(function(u){ try{ return new URL(u, t.u).href; }catch(e){ return u; } });
-    var newLen = seg.text ? seg.text.replace(/\[\[IMG:\d+\]\]/g,"").trim().length : 0;
-    var oldLen = (t.b||"").replace(/\[\[IMG:\d+\]\]/g,"").trim().length;
-    var newRes = countResInText(seg.text||"");
-    var oldRes = countResInText(t.b||"");
-    if(seg.text && seg.text.trim() === (t.b||"").trim()){
-      t._full = true; t._rss = false;
-    } else if(seg.text && newRes < oldRes){
-      // 候補の方がレス数が少ない＝「続き」を取りこぼしたか、関連記事
-      // リスト中心の劣化した抽出の可能性が高い。現在の本文は差し替えず、
-      // 複数レスある本文は全文として確定させて再劣化を防ぐ。
-      if(oldRes >= 2) t._full = true;
-    } else if(seg.text && (newLen > oldLen || newRes > oldRes)){
-      t.b = seg.text; t.i = seg.imgs; t._full = true; t._rss = false;
-      if(state.view==="reader" && state.current && state.current.siteId===s.id && s.threads[state.current.index]===t){
-        renderReader(false);
-      }
-    } else if(t._rss && !t._full){
-      // 全文が取れず、フィードの抜粋（冒頭部分）を表示している場合の明示
-      if(state.view==="reader" && state.current && state.current.siteId===s.id && s.threads[state.current.index]===t){
-        notice.textContent = "記事ページから全文を取得できなかったため、フィードの抜粋（冒頭部分）を表示しています。「本文を再取得」を押すと全文を取り直します。";
-        notice.hidden = false;
-      }
-    }
-  }catch(e){
-    if(state.view==="reader" && state.current && state.current.siteId===s.id && s.threads[state.current.index]===t){
-      notice.textContent = "本文の再取得ができなかったため、収録テキストを表示しています。";
-      notice.hidden = false;
-    }
+// サイト別の形式に応じて本文候補を評価する。番号のない反応も保持する。
+function bodyQuality(seg, mode){
+  var txt=(seg.text||"").trim(), n=countResInText(txt);
+  var blocks=txt.split(/\n\s*\n/).filter(function(b){return b.replace(/\[\[IMG:\d+\]\]/g, "").trim().length>=8;}).length;
+  var reactions=(txt.match(/(?:海外の反応|ネットの反応|この.*への反応|名無しさん|匿名|^[-・●■▶])/gm)||[]).length;
+  var junk=(txt.match(/^(?:人気記事|おすすめ記事|関連記事|記事一覧|ランキング|コメントを書く|トップページ|スポンサーリンク|月別アーカイブ).*$/gm)||[]).length;
+  var len=txt.replace(/\[\[IMG:\d+\]\]/g, "").length;
+  return Math.min(n,200)*(mode==="numbered"?160:60)+Math.min(blocks,150)*14+Math.min(reactions,80)*20+Math.min(len,18000)*0.045+Math.min((seg.imgs||[]).length,24)*8-junk*180;
+}
+function articleSegments(html, base, mode){
+  var doc=new DOMParser().parseFromString(html,"text/html");
+  if(!doc.body || doc.querySelector("parsererror")) throw new Error("invalid article");
+  if(/^(?:Access Denied|Just a moment|Attention Required|403 Forbidden|429 Too Many Requests)/i.test(doc.title.trim())) throw new Error("blocked");
+  var candidates=[];
+  function add(roots, keepComments){
+    roots=Array.from(new Set(roots)).filter(function(r){return !roots.some(function(o){return o!==r && o.contains(r);});});
+    roots.sort(function(a,b){return a===b?0:((a.compareDocumentPosition(b)&2)?1:-1);});
+    var inner=roots.map(function(r){
+      var c=r.cloneNode(true);
+      c.querySelectorAll("nav,header,footer,aside,.sidebar,.related,.ranking,.manual-related,.related-articles,.ad_rs_c,.c_box,.article-option,.comment-form,form,.share,.sns-button,.pager,.breadcrumb").forEach(function(n){n.remove();});
+      return c.innerHTML;
+    }).join("\n<div></div>\n");
+    var seg=htmlToSegments(inner,keepComments);
+    if(seg.text) candidates.push(seg);
   }
+  var roots=pickArticleRoots(doc);
+  add(roots,false);
+  var extra=Array.from(doc.querySelectorAll(".article-body-inner,.article_body_inner,.article-body-continue,.entry-content-more,.article_body_more,.mainmore,.more-body,.post-content,.entry-content,.article_bodymore,.article_body,.article-body,.entry_body,.entry_more,.entry-body,.post-body"));
+  if(extra.length) add(roots.concat(extra),false);
+  if(mode==="reaction" || mode==="mixed" || mode==="anime"){
+    var reactionRoots=Array.from(doc.querySelectorAll(".reaction,.reactions,.reaction-list,.response,.responses,.res-list,.res_list,.tweet-list,.matome,.article-text,blockquote.twitter-tweet"));
+    if(reactionRoots.length) add(roots.concat(reactionRoots),false);
+  }
+  if(mode==="anime"){
+    var comments=Array.from(doc.querySelectorAll("#comments .comment-list,#comments .comment-body,#comment .comment-body,.comments-area .comment-list,.comment-list,.comment-body"));
+    if(comments.length) add(roots.concat(comments),true);
+  }
+  Array.from(doc.querySelectorAll("article,main,#main,#content,.post,.entry")).slice(0,24).forEach(function(el){add([el],false);});
+  if(!candidates.length){var fallback=pickLargestBlock(doc);if(fallback) add([fallback],false);}
+  candidates.sort(function(a,b){return bodyQuality(b,mode)-bodyQuality(a,mode);});
+  var seg=candidates[0]||{text:"",imgs:[]};
+  seg.imgs=seg.imgs.map(function(u){try{return new URL(u,base).href;}catch(e){return u;}});
+  return seg;
+}
+async function loadArticleFull(s,t){
+  if(!t.u || t._full || (t._attempted && Date.now()-t._attempted<60000)) return;
+  var mode=SITE_BODY_PROFILES[s.name]||"mixed";
+  if(t._loading) return t._loading;
+  function active(){return state.view==="reader" && state.current && state.current.siteId===s.id && s.threads[state.current.index]===t;}
+  var notice=$("readerNotice");
+  if(active()){notice.textContent="レスを含む本文を取得しています…";notice.hidden=false;}
+  var work=(async function(){
+    var best={text:t.b||"",imgs:t.i||[]}, improved=false;
+    function accept(seg){
+      if(!seg || !seg.text) return;
+      if(bodyQuality(seg,mode)>bodyQuality(best,mode)){
+        best=seg; improved=true; t.b=seg.text; t.i=seg.imgs;
+        if(active()){renderReader(true);notice.textContent="本文を取得中…";notice.hidden=false;}
+      }
+    }
+    // 各経路の失敗や抜粋応答で終了せず、独立して全文候補を評価する。
+    async function route(u){
+      var html=await fetchRoute(u,12000);
+      var doc=new DOMParser().parseFromString(html,"text/html");
+      if(doc.body && doc.body.textContent.indexOf("羅列して紹介")>=0){
+        var want=t.t.replace(/【Pickup\d+】/g,"").replace(/\s+/g,"");
+        var link=Array.from(doc.querySelectorAll("a[href]")).find(function(a){return a.textContent.replace(/\s+/g,"")===want && /articles\/\d+\.html/.test(a.getAttribute("href"));});
+        if(link){var target=new URL(link.getAttribute("href"),t.u).href;if(target!==t.u){var routes=proxyUrls(target);var pos=proxyUrls(t.u).indexOf(u);return articleSegments(await fetchRoute(routes[Math.max(0,pos)],12000),target,mode);}}
+      }
+      return articleSegments(html,t.u,mode);
+    }
+    var urls=proxyUrls(t.u);
+    await Promise.allSettled(urls.map(function(u){return route(u).then(accept);}).concat([loadArticleViaJina(t).then(accept)]));
+    var n=countResInText(best.text);
+    // レスが少ない抜粋を全文確定扱いにしない。再取得可能な状態を残す。
+    t._attempted=Date.now();
+    t._full=improved && n>=2 && mode==="numbered";
+    if(t._full) t._rss=false;
+    if(active()){
+      notice.hidden=t._full || improved;
+      if(!t._full && !improved){notice.textContent="レスを含む全文を確認できませんでした。取得済みの内容を表示しています。本文を再取得するか、元サイトを開いてください。";}
+    }
+  })();
+  t._loading=work;
+  try{await work;}finally{delete t._loading;}
 }
 function moveThread(dir){
   var flat = flatList(), pos = -1;
@@ -1588,8 +1621,7 @@ document.addEventListener("keydown", function(e){
 async function addSite(name, rss, msgEl){
   msgEl.className = "msg"; msgEl.textContent = "フィードを確認中…（文字コード自動判別で取得）";
   try{
-    var text = await fetchTextSmart(rss);
-    var threads = parseRss(text);
+    var threads = await fetchFeedFast(rss);
     if(!threads.length) throw new Error("スレッドが取得できませんでした");
     sites.push({ id:"s"+(siteSeq++), name:name, home:"", rss:rss, enabled:true, custom:true, threads:threads });
     saveSiteState();
@@ -1642,9 +1674,10 @@ $("btnReloadArticle").addEventListener("click", function(){
   if(!state.current) return;
   var s = findSite(state.current.siteId), t = s.threads[state.current.index];
   t._full = false;
+  delete t._attempted;
   $("readerNotice").textContent = "本文を再取得しています…"; $("readerNotice").hidden = false;
   loadArticleFull(s, t).then(function(){
-    if(!t._full){ $("readerNotice").textContent = "再取得できませんでした。収録テキストを表示しています。"; $("readerNotice").hidden = false; }
+    if(!t._full && state.current && state.current.siteId===s.id && s.threads[state.current.index]===t){ $("readerNotice").textContent = "再取得できませんでした。収録テキストを表示しています。"; $("readerNotice").hidden = false; }
   });
 });
 $("btnAuto").addEventListener("click", function(){ state.auto ? stopAuto() : startAuto(); });
